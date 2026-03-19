@@ -29,7 +29,7 @@ NetProbe.sln
 │       ├── NetProbe.Shared.csproj   # net10.0 class library, no Spectre dependency
 │       ├── Protocol/
 │       │   ├── Packet.cs            # Binary packet struct + serialize/deserialize
-│       │   ├── PacketType.cs        # Enum: Probe, Echo, Report, Control
+│       │   ├── PacketType.cs        # Enum: Probe, Echo (Report/Control reserved)
 │       │   └── Checksum.cs          # CRC32 implementation
 │       ├── Net/
 │       │   ├── UdpProbeServer.cs    # UDP socket listener + echo logic
@@ -63,7 +63,7 @@ NetProbe.sln
 Offset  Size    Field
 0       2       Magic bytes (0x4E50 = "NP")
 2       1       Version (0x01)
-3       1       Packet type: 0=Probe, 1=Echo, 2=Report, 3=Control
+3       1       Packet type: 0=Probe, 1=Echo, 2=Reserved, 3=Reserved
 4       4       Sequence number (uint32, big-endian)
 8       8       Timestamp (int64, UTC ticks, big-endian)
 16      4       Payload length (uint32, big-endian)
@@ -83,9 +83,22 @@ Header is fixed 20 bytes. Total packet size = 24 + payload length.
 
 Server receives a Probe, flips type to Echo, preserves the sequence number and original timestamp, sends it back. Client computes RTT from the difference between current time and the echoed timestamp.
 
-### MTU Probing
+### TCP Framing
 
-Binary search on payload size within a range (e.g., 64–1500 bytes). Send a few probes at the midpoint size, narrow based on whether echoes come back. Converges in ~10 steps.
+TCP is a stream protocol, so packets must be length-prefixed for framing:
+- **4-byte big-endian length prefix** followed by the raw packet bytes
+- UDP sends raw packets with no framing prefix
+- Both sides must consistently apply/strip the framing layer
+
+### MTU Probing (UDP Only)
+
+Binary search on payload size within a range (64–1500 bytes):
+- **Probes per step**: 3 packets at each candidate size
+- **Success threshold**: at least 2 of 3 must echo back
+- **Per-step timeout**: 2 seconds (independent of `--timeout`)
+- **DontFragment**: `Socket.DontFragment = true` must be set, otherwise the OS fragments packets and every size "succeeds"
+- Converges in ~10 steps
+- MTU probing is UDP-only; `--mtu-probe` with `--protocol tcp` is an error
 
 ## Networking Layer
 
@@ -104,6 +117,15 @@ Binary search on payload size within a range (e.g., 64–1500 bytes). Send a few
 - All socket operations use `async/await` with `CancellationToken`.
 - `IAsyncDisposable` on server/client classes for socket cleanup.
 - Receive timeout on client to avoid hanging on lost packets.
+- Server supports multiple concurrent clients (each UDP source address or TCP connection is independent).
+- Server logs a startup banner and one line per client session to stdout via Spectre.Console markup.
+
+### Error Handling
+
+- Unreachable server (DNS failure, connection refused): print clear error message and exit with non-zero code.
+- Bind address/port already in use: print error and exit.
+- Invalid argument combinations (e.g., `--mtu-probe` with `--protocol tcp`): print validation error and exit.
+- `--version` flag configured in `CommandApp` setup.
 
 ## Statistics & Reporting
 
@@ -139,8 +161,8 @@ Final summary computed from collected results:
 ```
 netprobe server [--port 5555] [--bind 0.0.0.0] [--protocol udp|tcp]
 netprobe client --host <addr> [--port 5555] [--protocol udp|tcp]
-                [--count 1000] [--interval 10] [--payload-size 64]
-                [--mtu-probe] [--timeout 30] [--json]
+                [--count 1000] [--interval 10ms] [--payload-size 64]
+                [--mtu-probe] [--timeout 30s] [--json]
 ```
 
 ## Docker
@@ -155,8 +177,8 @@ Multi-stage build:
 ### docker-compose.yml
 
 Two services on a shared bridge network:
-- `server`: `command: server --port 5555 --protocol udp`
-- `client`: `command: client --host server --port 5555 --protocol udp --count 100`, `depends_on: server`
+- `server`: `command: server --port 5555 --protocol udp`, with a healthcheck (`netprobe client --host localhost --port 5555 --count 1 --timeout 2`)
+- `client`: `command: client --host server --port 5555 --protocol udp --count 100`, `depends_on: server` with `condition: service_healthy`
 - Environment variable overrides for all CLI args.
 
 ## CI
@@ -174,7 +196,7 @@ Two services on a shared bridge network:
 | Spectre.Console | NetProbe | Terminal UI, tables, charts, progress |
 | Spectre.Console.Cli | NetProbe | CLI argument parsing |
 | Humanizer.Core | NetProbe | Human-readable formatting |
-| System.IO.Hashing | NetProbe.Shared | CRC32 (built-in .NET 7+) |
+| System.IO.Hashing | NetProbe.Shared | CRC32 (part of .NET 10 runtime, no NuGet ref needed) |
 | xunit | NetProbe.Tests | Test framework |
 | xunit.runner.visualstudio | NetProbe.Tests | Test runner |
 | Microsoft.NET.Test.Sdk | NetProbe.Tests | Test infrastructure |
