@@ -1,6 +1,6 @@
 # NetProbe Design Specification
 
-A C# network diagnostic tool for identifying packet loss, retransmissions, latency, jitter, and reordering across network segments. Built for debugging issues in a homelab cluster behind pfSense.
+A C# network diagnostic tool for identifying packet loss, latency, jitter, and reordering across network segments. TCP mode surfaces symptoms of connection-level issues (slow handshakes, timeouts, NAT/firewall problems) but does not directly observe retransmissions. Built for debugging issues in a homelab cluster behind pfSense.
 
 ## Decisions
 
@@ -46,9 +46,13 @@ NetProbe.sln
 │       ├── Protocol/
 │       │   ├── PacketTests.cs       # Roundtrip serialize/deserialize, checksum validation
 │       │   └── ChecksumTests.cs     # CRC32 known-value tests
-│       └── Stats/
-│           ├── StatsCollectorTests.cs  # Jitter, reordering, loss detection
-│           └── TestReportTests.cs      # Percentile calculations, edge cases
+│       ├── Stats/
+│       │   ├── StatsCollectorTests.cs  # Jitter, reordering, loss detection
+│       │   └── TestReportTests.cs      # Percentile calculations, edge cases
+│       └── Integration/
+│           ├── UdpRoundtripTests.cs    # UDP client/server on loopback
+│           ├── TcpRoundtripTests.cs    # TCP client/server on loopback
+│           └── MtuProbeTests.cs        # MTU binary search with mocked/faked success/failure
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .github/workflows/ci.yml
@@ -65,7 +69,7 @@ Offset  Size    Field
 2       1       Version (0x01)
 3       1       Packet type: 0=Probe, 1=Echo, 2=Reserved, 3=Reserved
 4       4       Sequence number (uint32, big-endian)
-8       8       Timestamp (int64, UTC ticks, big-endian)
+8       8       Timestamp (int64, monotonic ticks via Stopwatch.GetTimestamp(), big-endian)
 16      4       Payload length (uint32, big-endian)
 20      N       Payload (variable)
 20+N    4       CRC32 checksum (over bytes 0 through 20+N-1)
@@ -79,9 +83,19 @@ Header is fixed 20 bytes. Total packet size = 24 + payload length.
 - CRC32 computed over everything except the checksum field itself using `System.IO.Hashing.Crc32`.
 - Big-endian wire format for network standard consistency.
 
+### Timestamp & RTT Measurement
+
+The timestamp field uses a **monotonic clock** (`Stopwatch.GetTimestamp()`) — not wall-clock UTC. The client writes its monotonic timestamp into the Probe packet. The server echoes it back unchanged. The client computes RTT as:
+
+```
+RTT = (Stopwatch.GetTimestamp() - echoedTimestamp) / Stopwatch.Frequency
+```
+
+This avoids issues with wall-clock drift, NTP adjustments, and timezone differences between client and server. The timestamp is only meaningful within the client's clock domain.
+
 ### Probe/Echo Flow
 
-Server receives a Probe, flips type to Echo, preserves the sequence number and original timestamp, sends it back. Client computes RTT from the difference between current time and the echoed timestamp.
+Server receives a Probe, flips type to Echo, preserves the sequence number and original (monotonic) timestamp, sends it back.
 
 ### TCP Framing
 
@@ -92,13 +106,19 @@ TCP is a stream protocol, so packets must be length-prefixed for framing:
 
 ### MTU Probing (UDP Only)
 
-Binary search on payload size within a range (64–1500 bytes):
+Binary search on **application payload size** within a range (64–1472 bytes):
 - **Probes per step**: 3 packets at each candidate size
 - **Success threshold**: at least 2 of 3 must echo back
 - **Per-step timeout**: 2 seconds (independent of `--timeout`)
-- **DontFragment**: `Socket.DontFragment = true` must be set, otherwise the OS fragments packets and every size "succeeds"
+- **DontFragment** (best effort): attempt to set `Socket.DontFragment = true` to prevent OS-level fragmentation. If the platform/runtime does not support this option, print a warning that MTU results may reflect fragmentation success rather than true path MTU behavior.
 - Converges in ~10 steps
 - MTU probing is UDP-only; `--mtu-probe` with `--protocol tcp` is an error
+
+**Terminology and reporting:**
+- **Primary result**: "Max successful application payload" — the largest payload size (the variable `N` bytes in the packet format) that reliably echoed back.
+- **Estimated max UDP payload**: application payload + protocol header (24 bytes). This is an estimate because it does not account for any additional overhead from the network stack.
+- **Estimated path MTU**: estimated UDP payload + IP header (20 bytes) + UDP header (8 bytes). Labeled clearly as an estimate — actual path MTU depends on whether DontFragment was successfully enabled, IP options, tunneling overhead (VPN, VXLAN), and other factors the tool cannot observe.
+- The tool must **not** claim that a successful N-byte application payload means the path MTU is N. All derived values are labeled as estimates with assumptions documented.
 
 ## Networking Layer
 
@@ -111,6 +131,10 @@ Binary search on payload size within a range (64–1500 bytes):
 
 - **Server**: Binds a `Socket` (TCP/stream), calls `AcceptAsync` in a loop. For each connection: read one framed Probe (4-byte big-endian length prefix + packet bytes), send back Echo, close connection. Each accept handled concurrently via `Task`.
 - **Client**: For each probe: open new TCP connection, send length-prefixed Probe, read Echo, close, record RTT (which includes connection setup time). Sequential by default since connection setup is the thing being measured.
+
+**What TCP mode measures and does not measure:**
+- Measures **connection setup + probe round-trip behavior** — useful for surfacing symptoms of firewall/NAT/session-table issues, slow handshakes, timeouts, or unstable connectivity.
+- Does **not** directly count or detect TCP retransmits at the application layer. Retransmissions happen below the socket API and are invisible to the application. Elevated RTT variance in TCP mode may *suggest* retransmits, but the tool cannot confirm them.
 
 ### Shared Patterns
 
@@ -135,7 +159,7 @@ Accumulates results during the test run:
 
 - Tracks every `ProbeResult` (sequence number, sent timestamp, received timestamp, RTT, payload size).
 - Detects reordering: maintains highest-seen sequence number; any arrival below that is out-of-order.
-- Computes rolling jitter using RFC 3550 formula: `J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`.
+- Computes **jitter using RFC 3550 interarrival jitter** (Section 6.4.1): `J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16`, where D is the difference in one-way transit time between consecutive packets. This is the sole jitter metric — used consistently in code, tests, JSON output (`"jitter_ms"`), and console display (labeled "Jitter (RFC 3550)").
 - Tracks throughput: total bytes / elapsed time.
 
 ### TestReport
@@ -144,10 +168,10 @@ Final summary computed from collected results:
 
 - Total sent / received / lost / loss percentage
 - RTT: min, avg, max, p95, p99 (sorted array, index-based percentile)
-- Jitter: mean deviation of inter-packet arrival times
+- Jitter (RFC 3550): single consistent metric across all outputs
 - Reordered packet count and percentage
 - Throughput in bytes/sec (formatted with Humanizer)
-- MTU probe result: max successful payload size (if MTU mode)
+- MTU probe result (if MTU mode): max successful application payload, estimated max UDP payload, estimated path MTU (with caveats)
 
 ### Display
 
