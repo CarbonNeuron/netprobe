@@ -1,0 +1,28 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+*.userprefs
+TestResults/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+publish/
+
+## NuGet
+**/[Pp]ackages/*
+*.nupkg
+**/packages/*
+.nuget/
+project.lock.json
+
+## IDE
+.idea/
+*.swp
+*~
+.vscode/
