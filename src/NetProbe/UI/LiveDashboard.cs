@@ -1,4 +1,3 @@
-using Humanizer;
 using NetProbe.Shared.Stats;
 using Spectre.Console;
 
@@ -9,35 +8,56 @@ namespace NetProbe.UI;
 /// </summary>
 public static class LiveDashboard
 {
+    /// <summary>
+    /// Runs the probe with a live-updating table (interactive terminal)
+    /// or a simple periodic status line (non-interactive).
+    /// </summary>
     public static async Task<StatsCollector> RunWithDashboardAsync(
-        Func<Task<StatsCollector>> runFunc, int totalPackets)
+        Func<StatsCollector, Task<StatsCollector>> runFunc,
+        int totalPackets)
     {
-        StatsCollector? collector = null;
+        var collector = new StatsCollector(totalSent: totalPackets);
 
-        await AnsiConsole.Live(new Table()
-            .AddColumn("Metric")
-            .AddColumn("Value")
-            .Border(TableBorder.Rounded)
-            .Title("[bold blue]Live Stats[/]"))
+        if (!AnsiConsole.Profile.Capabilities.Interactive)
+        {
+            // Non-interactive: simple periodic status lines
+            var task = runFunc(collector);
+
+            while (!task.IsCompleted)
+            {
+                await Task.Delay(500);
+                var sent = collector.SentSoFar;
+                var recv = collector.ReceivedCount;
+                var loss = sent > 0 ? (sent - recv) * 100.0 / sent : 0;
+                AnsiConsole.MarkupLine(
+                    "[dim]{0}/{1} sent, {2} received, {3:F1}% loss[/]",
+                    sent, totalPackets, recv, loss);
+            }
+
+            return await task;
+        }
+
+        // Interactive: live-updating table
+        await AnsiConsole.Live(BuildTable(collector, totalPackets))
+            .AutoClear(false)
             .StartAsync(async ctx =>
             {
-                var task = runFunc();
+                var task = runFunc(collector);
 
-                // Poll until complete
                 while (!task.IsCompleted)
                 {
                     await Task.Delay(100);
-                    ctx.UpdateTarget(BuildTable(null, totalPackets));
+                    ctx.UpdateTarget(BuildTable(collector, totalPackets));
                 }
 
-                collector = await task;
+                await task;
                 ctx.UpdateTarget(BuildTable(collector, totalPackets));
             });
 
-        return collector!;
+        return collector;
     }
 
-    private static Table BuildTable(StatsCollector? collector, int totalPackets)
+    private static Table BuildTable(StatsCollector collector, int totalPackets)
     {
         var table = new Table()
             .AddColumn("Metric")
@@ -45,23 +65,28 @@ public static class LiveDashboard
             .Border(TableBorder.Rounded)
             .Title("[bold blue]Live Stats[/]");
 
-        if (collector is null)
+        var sent = collector.SentSoFar;
+        var recv = collector.ReceivedCount;
+
+        table.AddRow("Progress", $"{sent} / {totalPackets}");
+        table.AddRow("Received", recv.ToString());
+
+        if (sent > 0)
         {
-            table.AddRow("Status", "[yellow]Running...[/]");
-            table.AddRow("Total to send", totalPackets.ToString());
-            return table;
+            var currentLoss = (sent - recv) * 100.0 / sent;
+            var lossColor = currentLoss switch
+            {
+                < 1 => "green",
+                < 5 => "yellow",
+                _ => "red"
+            };
+            table.AddRow("Loss", $"[{lossColor}]{currentLoss:F1}%[/]");
+        }
+        else
+        {
+            table.AddRow("Loss", "[dim]—[/]");
         }
 
-        var lossColor = collector.LossPercentage switch
-        {
-            < 1 => "green",
-            < 5 => "yellow",
-            _ => "red"
-        };
-
-        table.AddRow("Sent", collector.TotalSent.ToString());
-        table.AddRow("Received", collector.ReceivedCount.ToString());
-        table.AddRow("Loss", $"[{lossColor}]{collector.LossPercentage:F1}%[/]");
         table.AddRow("Reordered", collector.ReorderedCount.ToString());
         table.AddRow("Jitter (RFC 3550)", $"{collector.CurrentJitter:F3} ms");
 

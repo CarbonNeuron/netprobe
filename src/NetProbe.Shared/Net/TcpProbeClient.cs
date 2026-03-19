@@ -25,9 +25,15 @@ public sealed class TcpProbeClient
     /// <summary>
     /// Runs the probe test and returns a StatsCollector with all results.
     /// </summary>
-    public async Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct)
+    public Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct)
+        => RunAsync(count, intervalMs, payloadSize, timeoutSeconds, ct, collector: null);
+
+    /// <summary>
+    /// Runs the probe test using an externally provided StatsCollector (for live dashboard polling).
+    /// </summary>
+    public async Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct, StatsCollector? collector)
     {
-        var collector = new StatsCollector(totalSent: count);
+        collector ??= new StatsCollector(totalSent: count);
         var serverEp = new IPEndPoint(_serverAddress, _serverPort);
         var payload = new byte[payloadSize];
 
@@ -62,6 +68,7 @@ public sealed class TcpProbeClient
                 probeBytes.CopyTo(frameBuf.AsSpan(4));
 
                 await socket.SendAsync(frameBuf, SocketFlags.None, connectCts.Token);
+                collector.IncrementSent();
 
                 // Read echo
                 var lenBuf = new byte[4];

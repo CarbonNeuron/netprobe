@@ -24,16 +24,21 @@ public sealed class UdpProbeClient
     /// <summary>
     /// Runs the probe test and returns a StatsCollector with all results.
     /// </summary>
-    public async Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct)
+    public Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct)
+        => RunAsync(count, intervalMs, payloadSize, timeoutSeconds, ct, collector: null);
+
+    /// <summary>
+    /// Runs the probe test using an externally provided StatsCollector (for live dashboard polling).
+    /// </summary>
+    public async Task<StatsCollector> RunAsync(int count, int intervalMs, int payloadSize, int timeoutSeconds, CancellationToken ct, StatsCollector? collector)
     {
         using var socket = new Socket(_serverAddress.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
-        // Bind to an OS-assigned ephemeral port so ReceiveFromAsync works.
         var anyAddress = _serverAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
             ? IPAddress.IPv6Any : IPAddress.Any;
         socket.Bind(new IPEndPoint(anyAddress, 0));
         var serverEp = new IPEndPoint(_serverAddress, _serverPort);
 
-        var collector = new StatsCollector(totalSent: count);
+        collector ??= new StatsCollector(totalSent: count);
         var pendingTimestamps = new ConcurrentDictionary<uint, long>();
         var payload = new byte[payloadSize];
 
@@ -61,6 +66,7 @@ public sealed class UdpProbeClient
             probe.WriteTo(buffer);
 
             await socket.SendToAsync(buffer, SocketFlags.None, serverEp, ct);
+            collector.IncrementSent();
 
             if (seq < count - 1)
                 await Task.Delay(intervalMs, ct);

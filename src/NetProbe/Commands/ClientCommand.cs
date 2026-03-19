@@ -150,7 +150,7 @@ public sealed class ClientCommand : AsyncCommand<ClientSettings>
             else
             {
                 collector = await LiveDashboard.RunWithDashboardAsync(
-                    () => client.RunAsync(settings.Count, settings.Interval, settings.PayloadSize, settings.Timeout, cts.Token),
+                    c => client.RunAsync(settings.Count, settings.Interval, settings.PayloadSize, settings.Timeout, cts.Token, c),
                     settings.Count);
             }
         }
@@ -165,7 +165,7 @@ public sealed class ClientCommand : AsyncCommand<ClientSettings>
             else
             {
                 collector = await LiveDashboard.RunWithDashboardAsync(
-                    () => client.RunAsync(settings.Count, settings.Interval, settings.PayloadSize, settings.Timeout, cts.Token),
+                    c => client.RunAsync(settings.Count, settings.Interval, settings.PayloadSize, settings.Timeout, cts.Token, c),
                     settings.Count);
             }
         }

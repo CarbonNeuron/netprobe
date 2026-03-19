@@ -13,6 +13,7 @@ public sealed class StatsCollector
     private double _jitter;
     private double _lastRtt = double.NaN;
     private bool _hasFirstPacket;
+    private volatile int _sentSoFar;
 
     public StatsCollector(int totalSent)
     {
@@ -25,6 +26,16 @@ public sealed class StatsCollector
     public double LossPercentage => _totalSent == 0 ? 0.0 : (_totalSent - _results.Count) * 100.0 / _totalSent;
     public IReadOnlyList<ProbeResult> Results => _results;
     public int TotalSent => _totalSent;
+
+    /// <summary>
+    /// Number of packets sent so far (updated by client during the run).
+    /// </summary>
+    public int SentSoFar => _sentSoFar;
+
+    /// <summary>
+    /// Increments the sent counter. Called by client code as packets are dispatched.
+    /// </summary>
+    public void IncrementSent() => Interlocked.Increment(ref _sentSoFar);
 
     /// <summary>
     /// Records a received probe result. Thread-safe is NOT guaranteed — call from a single thread.
