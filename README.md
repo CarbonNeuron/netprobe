@@ -99,15 +99,53 @@ dotnet run --project src/NetProbe -- client --host localhost --port 5555
 
 ## Docker
 
+The image is published to GHCR: `ghcr.io/carbonneuron/netprobe`
+
+### UDP Server & Client
+
 ```bash
-# Build
+# Start server (UDP, background, expose port)
+docker run -d --name netprobe-server -p 5555:5555/udp ghcr.io/carbonneuron/netprobe server --port 5555 --protocol udp
+
+# Run client against the server
+docker run --rm ghcr.io/carbonneuron/netprobe client --host <server-ip> --port 5555 --protocol udp --count 1000 --interval 10
+```
+
+### TCP Server & Client
+
+```bash
+# Start server (TCP, background, expose port)
+docker run -d --name netprobe-server -p 5555:5555/tcp ghcr.io/carbonneuron/netprobe server --port 5555 --protocol tcp
+
+# Run client against the server
+docker run --rm ghcr.io/carbonneuron/netprobe client --host <server-ip> --port 5555 --protocol tcp --count 100 --interval 50
+```
+
+### MTU Probing
+
+```bash
+# Run MTU probe against a running UDP server
+docker run --rm ghcr.io/carbonneuron/netprobe client --host <server-ip> --port 5555 --mtu-probe
+```
+
+### JSON Output
+
+```bash
+# Get machine-readable results for scripting
+docker run --rm ghcr.io/carbonneuron/netprobe client --host <server-ip> --port 5555 --count 100 --json
+```
+
+### Docker Compose
+
+```bash
+docker compose up
+```
+
+### Build Locally
+
+```bash
 docker build -t netprobe .
-
-# Run server
-docker run -d -p 5555:5555/udp netprobe server --port 5555
-
-# Run client
-docker run --rm netprobe client --host <server-ip> --port 5555 --count 100
+docker run --rm netprobe server --port 5555
 ```
 
 ## License
