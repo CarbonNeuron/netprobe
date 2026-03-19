@@ -1,0 +1,27 @@
+services:
+  server:
+    build: .
+    command: server --port 5555 --protocol udp
+    ports:
+      - "5555:5555/udp"
+    healthcheck:
+      test: ["CMD", "netprobe", "client", "--host", "localhost", "--port", "5555", "--count", "1", "--timeout", "2", "--json"]
+      interval: 5s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - netprobe
+
+  client:
+    build: .
+    command: client --host server --port 5555 --protocol udp --count 100 --interval 10
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - netprobe
+
+networks:
+  netprobe:
+    driver: bridge
