@@ -201,7 +201,7 @@ Multi-stage build:
 ### docker-compose.yml
 
 Two services on a shared bridge network:
-- `server`: `command: server --port 5555 --protocol udp`, with a healthcheck (`netprobe client --host localhost --port 5555 --count 1 --timeout 2`)
+- `server`: `command: server --port 5555 --protocol udp`, with a healthcheck (`netprobe client --host localhost --port 5555 --count 1 --timeout 2s --json`)
 - `client`: `command: client --host server --port 5555 --protocol udp --count 100`, `depends_on: server` with `condition: service_healthy`
 - Environment variable overrides for all CLI args.
 
