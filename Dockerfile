@@ -1,10 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY NetProbe.slnx ./
 COPY src/NetProbe.Shared/NetProbe.Shared.csproj src/NetProbe.Shared/
 COPY src/NetProbe/NetProbe.csproj src/NetProbe/
-RUN dotnet restore
+RUN dotnet restore src/NetProbe/NetProbe.csproj
 
 COPY src/ src/
 RUN dotnet publish src/NetProbe/NetProbe.csproj -c Release -o /app/publish
